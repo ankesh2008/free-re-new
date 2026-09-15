@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "main": "dist/server/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "tsx watch server/index.ts",
     "build": "prisma generate && tsc",
