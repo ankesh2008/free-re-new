@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/db';
+import { sendError } from '../lib/response';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // Get ELO Leaderboard
 router.get('/leaderboard', async (req, res) => {
@@ -21,7 +21,7 @@ router.get('/leaderboard', async (req, res) => {
     });
     res.json(leaderboard);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendError(res, 500, err.message);
   }
 });
 
@@ -41,10 +41,10 @@ router.get('/:roomCode', async (req, res) => {
       },
     });
 
-    if (!match) return res.status(404).json({ error: 'Match not found' });
+    if (!match) return sendError(res, 404, 'Match not found');
     res.json(match);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendError(res, 500, err.message);
   }
 });
 

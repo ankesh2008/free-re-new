@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/db';
+import { sendError } from '../lib/response';
+import { authMiddleware } from '../middleware/authMiddleware';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // List all problems
 router.get('/', async (req, res) => {
@@ -19,7 +20,7 @@ router.get('/', async (req, res) => {
     });
     res.json(problems);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendError(res, 500, err.message);
   }
 });
 
@@ -27,26 +28,46 @@ router.get('/', async (req, res) => {
 router.get('/:idOrSlug', async (req, res) => {
   try {
     const { idOrSlug } = req.params;
+    const isUUID = idOrSlug.length === 36;
+
     const problem = await prisma.problem.findFirst({
       where: {
-        OR: [{ id: idOrSlug }, { slug: idOrSlug }],
+        OR: [
+          isUUID ? { id: idOrSlug } : undefined,
+          { slug: idOrSlug },
+        ].filter(Boolean) as any,
       },
     });
 
-    if (!problem) return res.status(404).json({ error: 'Problem not found' });
+    if (!problem) return sendError(res, 404, 'Problem not found');
     res.json(problem);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendError(res, 500, err.message);
   }
 });
 
-// Admin: Create Problem
-router.post('/', async (req, res) => {
+// Helper validation for test arrays
+function validateTestCases(tests: any): boolean {
+  if (!Array.isArray(tests)) return false;
+  return tests.every(
+    (t) => typeof t === 'object' && t !== null && typeof t.input === 'string' && typeof t.expected === 'string'
+  );
+}
+
+// Protected Route: Admin Create Problem
+router.post('/', authMiddleware, async (req, res) => {
   try {
     const { title, difficulty, description, initialJS, initialPy, sampleTests, hiddenTests } = req.body;
 
     if (!title || !description || !initialJS || !initialPy) {
-      return res.status(400).json({ error: 'Missing required problem fields' });
+      return sendError(res, 400, 'Title, description, initialJS, and initialPy are required');
+    }
+
+    const parsedSample = typeof sampleTests === 'string' ? JSON.parse(sampleTests || '[]') : sampleTests;
+    const parsedHidden = typeof hiddenTests === 'string' ? JSON.parse(hiddenTests || '[]') : hiddenTests;
+
+    if (!validateTestCases(parsedSample) || !validateTestCases(parsedHidden)) {
+      return sendError(res, 400, 'Test cases must be an array of objects with { input: string, expected: string }');
     }
 
     const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
@@ -59,14 +80,14 @@ router.post('/', async (req, res) => {
         description,
         initialJS,
         initialPy,
-        sampleTests: typeof sampleTests === 'string' ? sampleTests : JSON.stringify(sampleTests || []),
-        hiddenTests: typeof hiddenTests === 'string' ? hiddenTests : JSON.stringify(hiddenTests || []),
+        sampleTests: JSON.stringify(parsedSample),
+        hiddenTests: JSON.stringify(parsedHidden),
       },
     });
 
-    res.json(problem);
+    res.json({ success: true, problem });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendError(res, 500, err.message);
   }
 });
 

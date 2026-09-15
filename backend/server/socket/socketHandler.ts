@@ -1,9 +1,28 @@
 import { Server, Socket } from 'socket.io';
 import { roomManager } from './roomManager';
 import { runTestsLocally, TestCase } from '../services/executionService';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/db';
 
-const prisma = new PrismaClient();
+function safeParseTests(data: string): TestCase[] {
+  try {
+    const parsed = JSON.parse(data || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((t) => t && typeof t.input === 'string' && typeof t.expected === 'string');
+  } catch (err) {
+    console.error('Failed to parse test JSON:', err);
+    return [];
+  }
+}
+
+function safeCallback(callback: any, data: any) {
+  try {
+    if (typeof callback === 'function') {
+      callback(data);
+    }
+  } catch (err) {
+    console.error('Socket ACK callback error:', err);
+  }
+}
 
 export function setupSocketHandlers(io: Server) {
   roomManager.init(io);
@@ -27,13 +46,17 @@ export function setupSocketHandlers(io: Server) {
 
     // Create Room
     socket.on('create_room', async (playerData: { id: string; username: string; elo: number }, callback) => {
-      const room = await roomManager.createRoom({
-        ...playerData,
-        socketId: socket.id,
-        connected: true,
-      });
-      socket.join(room.roomCode);
-      if (typeof callback === 'function') callback({ roomCode: room.roomCode, room });
+      try {
+        const room = await roomManager.createRoom({
+          ...playerData,
+          socketId: socket.id,
+          connected: true,
+        });
+        socket.join(room.roomCode);
+        safeCallback(callback, { roomCode: room.roomCode, room });
+      } catch (err: any) {
+        safeCallback(callback, { error: err.message || 'Failed to create room' });
+      }
     });
 
     // Join Room
@@ -45,7 +68,7 @@ export function setupSocketHandlers(io: Server) {
       });
 
       if (result.error) {
-        if (typeof callback === 'function') callback({ error: result.error });
+        safeCallback(callback, { error: result.error });
         return;
       }
 
@@ -54,11 +77,10 @@ export function setupSocketHandlers(io: Server) {
 
       // Notify room members
       io.to(room.roomCode).emit('room_updated', { room });
-
-      if (typeof callback === 'function') callback({ room });
+      safeCallback(callback, { room });
     });
 
-    // Collaborative Editor Sync (Yjs or Socket Broadcast)
+    // Collaborative Editor Sync (Socket Broadcast)
     socket.on('code_change', (data: { roomCode: string; code: string; language: string; cursor?: any }) => {
       socket.to(data.roomCode.toUpperCase()).emit('opponent_code_update', {
         code: data.code,
@@ -68,51 +90,50 @@ export function setupSocketHandlers(io: Server) {
       });
     });
 
-    // CRDT Yjs Binary Update
-    socket.on('yjs_update', (data: { roomCode: string; update: ArrayBuffer }) => {
-      socket.to(data.roomCode.toUpperCase()).emit('yjs_update', data.update);
-    });
-
     // Run Code against Sample Tests
     socket.on('run_code', async (data: { roomCode: string; code: string; language: 'javascript' | 'python' }, callback) => {
       const room = roomManager.getRoom(data.roomCode);
       if (!room || !room.problem) {
-        if (typeof callback === 'function') callback({ error: 'Problem not found' });
+        safeCallback(callback, { error: 'Problem not found' });
         return;
       }
 
-      const sampleTests: TestCase[] = JSON.parse(room.problem.sampleTests || '[]');
+      const sampleTests: TestCase[] = safeParseTests(room.problem.sampleTests);
       const executionResult = await runTestsLocally(data.code, data.language, sampleTests);
 
-      if (typeof callback === 'function') callback(executionResult);
+      safeCallback(callback, executionResult);
     });
 
     // Submit Code against Hidden Test Cases
     socket.on('submit_code', async (data: { roomCode: string; userId: string; code: string; language: 'javascript' | 'python' }, callback) => {
       const room = roomManager.getRoom(data.roomCode);
       if (!room || !room.problem || room.status === 'FINISHED') {
-        if (typeof callback === 'function') callback({ error: 'Match is inactive' });
+        safeCallback(callback, { error: 'Match is inactive' });
         return;
       }
 
-      const hiddenTests: TestCase[] = JSON.parse(room.problem.hiddenTests || '[]');
+      const hiddenTests: TestCase[] = safeParseTests(room.problem.hiddenTests);
       const executionResult = await runTestsLocally(data.code, data.language, hiddenTests);
 
-      // Save submission in DB
-      const matchRecord = await prisma.match.findUnique({ where: { roomCode: room.roomCode } });
-      if (matchRecord) {
-        await prisma.submission.create({
-          data: {
-            matchId: matchRecord.id,
-            userId: data.userId,
-            code: data.code,
-            language: data.language,
-            status: executionResult.status,
-            testsPassed: executionResult.testsPassed,
-            totalTests: executionResult.totalTests,
-            executionTimeMs: executionResult.executionTimeMs,
-          },
-        }).catch(() => {});
+      // Save submission in DB with error handling
+      try {
+        const matchRecord = await prisma.match.findUnique({ where: { roomCode: room.roomCode } });
+        if (matchRecord) {
+          await prisma.submission.create({
+            data: {
+              matchId: matchRecord.id,
+              userId: data.userId,
+              code: data.code,
+              language: data.language,
+              status: executionResult.status,
+              testsPassed: executionResult.testsPassed,
+              totalTests: executionResult.totalTests,
+              executionTimeMs: executionResult.executionTimeMs,
+            },
+          });
+        }
+      } catch (err) {
+        console.error('Failed to log submission record:', err);
       }
 
       // Notify room about submission attempt
@@ -128,7 +149,7 @@ export function setupSocketHandlers(io: Server) {
         await roomManager.finishMatch(room.roomCode, data.userId, `Passed all ${executionResult.totalTests} test cases!`);
       }
 
-      if (typeof callback === 'function') callback(executionResult);
+      safeCallback(callback, executionResult);
     });
 
     // Forfeit Match
@@ -136,9 +157,19 @@ export function setupSocketHandlers(io: Server) {
       await roomManager.handleForfeit(data.roomCode, data.userId, 'Player surrendered');
     });
 
-    // Disconnect
+    // Disconnect handling with opponent notification
     socket.on('disconnect', () => {
       console.log(`Socket disconnected: ${socket.id}`);
+
+      // Notify room members of opponent disconnect
+      for (const [roomCode, room] of roomManager.getRooms().entries()) {
+        if (room.player1?.socketId === socket.id && room.player2) {
+          io.to(room.player2.socketId).emit('opponent_disconnected');
+        } else if (room.player2?.socketId === socket.id && room.player1) {
+          io.to(room.player1.socketId).emit('opponent_disconnected');
+        }
+      }
+
       roomManager.handleDisconnect(socket.id);
     });
   });

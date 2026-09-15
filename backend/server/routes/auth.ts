@@ -1,10 +1,11 @@
 import { Router } from 'express';
-import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import { prisma } from '../lib/db';
+import { sendError } from '../lib/response';
 
 const router = Router();
-const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'freere_secret_key_12345';
 
 // Register
@@ -12,7 +13,7 @@ router.post('/register', async (req, res) => {
   try {
     const { username, email, password } = req.body;
     if (!username || !email || !password) {
-      return res.status(400).json({ error: 'All fields are required' });
+      return sendError(res, 400, 'Username, email, and password are required');
     }
 
     const existing = await prisma.user.findFirst({
@@ -20,7 +21,7 @@ router.post('/register', async (req, res) => {
     });
 
     if (existing) {
-      return res.status(400).json({ error: 'Username or email already in use' });
+      return sendError(res, 400, 'Username or email already in use');
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
@@ -31,6 +32,7 @@ router.post('/register', async (req, res) => {
     const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
 
     res.json({
+      success: true,
       token,
       user: {
         id: user.id,
@@ -43,7 +45,7 @@ router.post('/register', async (req, res) => {
       },
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Registration failed' });
+    sendError(res, 500, err.message || 'Registration failed');
   }
 });
 
@@ -51,20 +53,25 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
+    if (!email || !password) {
+      return sendError(res, 400, 'Email and password are required');
+    }
+
     const user = await prisma.user.findUnique({ where: { email } });
 
     if (!user) {
-      return res.status(400).json({ error: 'Invalid credentials' });
+      return sendError(res, 400, 'Invalid credentials');
     }
 
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) {
-      return res.status(400).json({ error: 'Invalid credentials' });
+      return sendError(res, 400, 'Invalid credentials');
     }
 
     const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
 
     res.json({
+      success: true,
       token,
       user: {
         id: user.id,
@@ -77,24 +84,44 @@ router.post('/login', async (req, res) => {
       },
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Login failed' });
+    sendError(res, 500, err.message || 'Login failed');
   }
 });
 
-// Quick Guest Login
+// Quick Guest Login with UUID collision retry loop
 router.post('/guest', async (req, res) => {
   try {
-    const guestUsername = `Guest_${Math.floor(1000 + Math.random() * 9000)}`;
-    const guestEmail = `${guestUsername.toLowerCase()}@freere.guest`;
-    const passwordHash = await bcrypt.hash('guestpass', 10);
+    let retries = 5;
+    let user = null;
 
-    const user = await prisma.user.create({
-      data: { username: guestUsername, email: guestEmail, passwordHash },
-    });
+    while (retries > 0) {
+      const guestId = crypto.randomUUID();
+      const guestUsername = `Guest_${guestId.substring(0, 8)}`;
+      const guestEmail = `guest_${guestId}@freere.guest`;
+      const passwordHash = await bcrypt.hash(guestId, 10);
+
+      try {
+        user = await prisma.user.create({
+          data: { username: guestUsername, email: guestEmail, passwordHash },
+        });
+        break; // Successfully created
+      } catch (err: any) {
+        if (err.code === 'P2002') {
+          retries--;
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (!user) {
+      return sendError(res, 500, 'Failed to generate unique guest account');
+    }
 
     const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '1d' });
 
     res.json({
+      success: true,
       token,
       user: {
         id: user.id,
@@ -107,7 +134,7 @@ router.post('/guest', async (req, res) => {
       },
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Guest login failed' });
+    sendError(res, 500, err.message || 'Guest login failed');
   }
 });
 
@@ -127,7 +154,7 @@ router.get('/user/:username', async (req, res) => {
       },
     });
 
-    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user) return sendError(res, 404, 'User not found');
 
     const matches = await prisma.match.findMany({
       where: {
@@ -144,7 +171,7 @@ router.get('/user/:username', async (req, res) => {
 
     res.json({ user, matches });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendError(res, 500, err.message);
   }
 });
 

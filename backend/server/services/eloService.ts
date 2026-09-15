@@ -9,7 +9,8 @@ export function calculateEloChange(
   kFactor: number = 32
 ): { p1NewElo: number; p2NewElo: number; p1Delta: number; p2Delta: number } {
   const expectedP1 = 1 / (1 + Math.pow(10, (p2Elo - p1Elo) / 400));
-  const expectedP2 = 1 / (1 + Math.pow(10, (p1Elo - p2Elo) / 400));
+  // Guarantee expectedP1 + expectedP2 === 1.0 mathematically
+  const expectedP2 = 1 - expectedP1;
 
   let actualP1 = 0.5;
   let actualP2 = 0.5;

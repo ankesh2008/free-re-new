@@ -1,9 +1,6 @@
-import { Server, Socket } from 'socket.io';
-import { PrismaClient } from '@prisma/client';
+import { Server } from 'socket.io';
+import { prisma } from '../lib/db';
 import { calculateEloChange } from '../services/eloService';
-import { runTestsLocally, TestCase } from '../services/executionService';
-
-const prisma = new PrismaClient();
 
 export interface Player {
   id: string;
@@ -28,7 +25,6 @@ export interface Room {
   winnerId?: string | null;
   disconnectTimerP1?: NodeJS.Timeout;
   disconnectTimerP2?: NodeJS.Timeout;
-  yjsState?: Uint8Array;
 }
 
 class RoomManager {
@@ -36,6 +32,8 @@ class RoomManager {
   private matchmakingQueue: Player[] = [];
   private io: Server | null = null;
   private timerInterval: NodeJS.Timeout | null = null;
+  private isProcessingQueue = false;
+  private finishingLocks: Set<string> = new Set();
 
   public init(io: Server) {
     this.io = io;
@@ -46,21 +44,27 @@ class RoomManager {
     return this.rooms.get(roomCode.toUpperCase());
   }
 
+  public getRooms(): Map<string, Room> {
+    return this.rooms;
+  }
+
   public async createRoom(host: Player, isPrivate: boolean = true): Promise<Room> {
     const roomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    
+
     // Pick random problem from DB
     const problems = await prisma.problem.findMany();
-    const problem = problems.length > 0 
-      ? problems[Math.floor(Math.random() * problems.length)]
-      : null;
+    if (problems.length === 0) {
+      throw new Error('No competitive programming problems available. Please seed database first.');
+    }
+
+    const problem = problems[Math.floor(Math.random() * problems.length)];
 
     const room: Room = {
       roomCode,
       player1: { ...host, connected: true },
       player2: null,
       spectators: [],
-      problemId: problem?.id || 'default',
+      problemId: problem.id,
       problem,
       status: 'WAITING',
       timeRemainingSec: 600, // 10 minutes
@@ -68,8 +72,8 @@ class RoomManager {
 
     this.rooms.set(roomCode, room);
 
-    // Save match draft in DB
-    if (problem) {
+    // Save match draft in DB with error handling
+    try {
       await prisma.match.create({
         data: {
           roomCode,
@@ -77,7 +81,9 @@ class RoomManager {
           problemId: problem.id,
           status: 'WAITING',
         },
-      }).catch(() => {});
+      });
+    } catch (err) {
+      console.error(`Failed to create match draft for room ${roomCode}:`, err);
     }
 
     return room;
@@ -91,7 +97,7 @@ class RoomManager {
       return { error: 'Room not found' };
     }
 
-    // Check if player is reconnecting
+    // Check if player 1 is reconnecting
     if (room.player1 && room.player1.id === player.id) {
       room.player1.socketId = player.socketId;
       room.player1.connected = true;
@@ -102,6 +108,7 @@ class RoomManager {
       return { room };
     }
 
+    // Check if player 2 is reconnecting
     if (room.player2 && room.player2.id === player.id) {
       room.player2.socketId = player.socketId;
       room.player2.connected = true;
@@ -118,14 +125,17 @@ class RoomManager {
       room.status = 'IN_PROGRESS';
       room.startTime = Date.now();
 
-      // Update match record in DB
-      await prisma.match.update({
-        where: { roomCode: code },
-        data: {
-          player2Id: player.id,
-          status: 'IN_PROGRESS',
-        },
-      }).catch(() => {});
+      try {
+        await prisma.match.update({
+          where: { roomCode: code },
+          data: {
+            player2Id: player.id,
+            status: 'IN_PROGRESS',
+          },
+        });
+      } catch (err) {
+        console.error(`Failed to update match record for room ${code}:`, err);
+      }
 
       return { room };
     }
@@ -139,29 +149,38 @@ class RoomManager {
   }
 
   public addToMatchmaking(player: Player) {
-    // Check if already in queue
-    if (this.matchmakingQueue.some(p => p.id === player.id)) return;
-
+    if (this.matchmakingQueue.some((p) => p.id === player.id)) return;
     this.matchmakingQueue.push(player);
     this.processMatchmaking();
   }
 
   public removeFromMatchmaking(socketId: string) {
-    this.matchmakingQueue = this.matchmakingQueue.filter(p => p.socketId !== socketId);
+    this.matchmakingQueue = this.matchmakingQueue.filter((p) => p.socketId !== socketId);
   }
 
   private async processMatchmaking() {
-    if (this.matchmakingQueue.length < 2) return;
+    if (this.isProcessingQueue || this.matchmakingQueue.length < 2) return;
+    this.isProcessingQueue = true;
 
-    const p1 = this.matchmakingQueue.shift()!;
-    const p2 = this.matchmakingQueue.shift()!;
+    try {
+      while (this.matchmakingQueue.length >= 2) {
+        const p1 = this.matchmakingQueue.shift()!;
+        const p2 = this.matchmakingQueue.shift()!;
 
-    const room = await this.createRoom(p1, false);
-    await this.joinRoom(room.roomCode, p2);
+        try {
+          const room = await this.createRoom(p1, false);
+          await this.joinRoom(room.roomCode, p2);
 
-    if (this.io) {
-      this.io.to(p1.socketId).emit('match_found', { roomCode: room.roomCode });
-      this.io.to(p2.socketId).emit('match_found', { roomCode: room.roomCode });
+          if (this.io) {
+            this.io.to(p1.socketId).emit('match_found', { roomCode: room.roomCode });
+            this.io.to(p2.socketId).emit('match_found', { roomCode: room.roomCode });
+          }
+        } catch (err) {
+          console.error('Matchmaking pair creation failed:', err);
+        }
+      }
+    } finally {
+      this.isProcessingQueue = false;
     }
   }
 
@@ -172,7 +191,6 @@ class RoomManager {
       if (room.player1?.socketId === socketId) {
         room.player1.connected = false;
         if (room.status === 'IN_PROGRESS') {
-          // Set 60 second reconnect timer
           room.disconnectTimerP1 = setTimeout(() => {
             this.handleForfeit(roomCode, room.player1?.id || '', 'Player 1 disconnected (timeout)');
           }, 60000);
@@ -199,64 +217,87 @@ class RoomManager {
   }
 
   public async finishMatch(roomCode: string, winnerId: string | null, outcomeReason: string) {
+    // Atomic finish match lock check
+    if (this.finishingLocks.has(roomCode)) return;
     const room = this.rooms.get(roomCode);
     if (!room || room.status === 'FINISHED') return;
 
-    room.status = 'FINISHED';
-    room.winnerId = winnerId;
+    this.finishingLocks.add(roomCode);
 
-    let p1EloDelta = 0;
-    let p2EloDelta = 0;
+    try {
+      room.status = 'FINISHED';
+      room.winnerId = winnerId;
 
-    if (room.player1 && room.player2) {
-      const outcome = winnerId === room.player1.id ? 'p1_win' : winnerId === room.player2.id ? 'p2_win' : 'draw';
-      const eloRes = calculateEloChange(room.player1.elo, room.player2.elo, outcome);
+      let p1EloDelta = 0;
+      let p2EloDelta = 0;
 
-      p1EloDelta = eloRes.p1Delta;
-      p2EloDelta = eloRes.p2Delta;
+      if (room.player1 && room.player2) {
+        const outcome = winnerId === room.player1.id ? 'p1_win' : winnerId === room.player2.id ? 'p2_win' : 'draw';
+        const eloRes = calculateEloChange(room.player1.elo, room.player2.elo, outcome);
 
-      // Update User ELO in database
-      await prisma.user.update({
-        where: { id: room.player1.id },
-        data: {
-          elo: eloRes.p1NewElo,
-          wins: outcome === 'p1_win' ? { increment: 1 } : undefined,
-          losses: outcome === 'p2_win' ? { increment: 1 } : undefined,
-          draws: outcome === 'draw' ? { increment: 1 } : undefined,
-        },
-      }).catch(() => {});
+        p1EloDelta = eloRes.p1Delta;
+        p2EloDelta = eloRes.p2Delta;
 
-      await prisma.user.update({
-        where: { id: room.player2.id },
-        data: {
-          elo: eloRes.p2NewElo,
-          wins: outcome === 'p2_win' ? { increment: 1 } : undefined,
-          losses: outcome === 'p1_win' ? { increment: 1 } : undefined,
-          draws: outcome === 'draw' ? { increment: 1 } : undefined,
-        },
-      }).catch(() => {});
+        try {
+          await prisma.user.update({
+            where: { id: room.player1.id },
+            data: {
+              elo: eloRes.p1NewElo,
+              wins: outcome === 'p1_win' ? { increment: 1 } : undefined,
+              losses: outcome === 'p2_win' ? { increment: 1 } : undefined,
+              draws: outcome === 'draw' ? { increment: 1 } : undefined,
+            },
+          });
 
-      // Update Match record
-      await prisma.match.update({
-        where: { roomCode },
-        data: {
-          status: winnerId ? 'FINISHED' : 'DRAW',
-          winnerId: winnerId || undefined,
+          await prisma.user.update({
+            where: { id: room.player2.id },
+            data: {
+              elo: eloRes.p2NewElo,
+              wins: outcome === 'p2_win' ? { increment: 1 } : undefined,
+              losses: outcome === 'p1_win' ? { increment: 1 } : undefined,
+              draws: outcome === 'draw' ? { increment: 1 } : undefined,
+            },
+          });
+
+          await prisma.match.update({
+            where: { roomCode },
+            data: {
+              status: winnerId ? 'FINISHED' : 'DRAW',
+              winnerId: winnerId || undefined,
+              player1EloDelta: p1EloDelta,
+              player2EloDelta: p2EloDelta,
+              endedAt: new Date(),
+            },
+          });
+        } catch (dbErr) {
+          console.error(`Database error during match finish for room ${roomCode}:`, dbErr);
+        }
+      }
+
+      if (this.io) {
+        this.io.to(roomCode).emit('match_ended', {
+          winnerId,
+          reason: outcomeReason,
           player1EloDelta: p1EloDelta,
           player2EloDelta: p2EloDelta,
-          endedAt: new Date(),
-        },
-      }).catch(() => {});
-    }
+        });
+      }
 
-    if (this.io) {
-      this.io.to(roomCode).emit('match_ended', {
-        winnerId,
-        reason: outcomeReason,
-        player1EloDelta: p1EloDelta,
-        player2EloDelta: p2EloDelta,
-      });
+      // Schedule room memory cleanup after 1 hour
+      this.scheduleRoomCleanup(roomCode);
+    } finally {
+      this.finishingLocks.delete(roomCode);
     }
+  }
+
+  private scheduleRoomCleanup(roomCode: string) {
+    setTimeout(() => {
+      const room = this.rooms.get(roomCode);
+      if (room && room.status === 'FINISHED') {
+        this.rooms.delete(roomCode);
+        console.log(`Cleaned up expired finished room: ${roomCode}`);
+      }
+    }, 3600000); // 1 hour
   }
 
   private startGlobalTimer() {

@@ -1,11 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { PlusCircle, FileText, CheckCircle2, ShieldAlert } from 'lucide-react';
+import { PlusCircle, FileText } from 'lucide-react';
 
 export default function AdminProblemsPage() {
   const [problems, setProblems] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
 
   // Form state
   const [title, setTitle] = useState('');
@@ -26,7 +25,6 @@ export default function AdminProblemsPage() {
       .then((res) => res.json())
       .then((data) => {
         setProblems(Array.isArray(data) ? data : []);
-        setLoading(false);
       })
       .catch((err) => console.error(err));
   };
@@ -35,10 +33,15 @@ export default function AdminProblemsPage() {
     e.preventDefault();
     setMsg('');
 
+    const token = typeof window !== 'undefined' ? localStorage.getItem('freere_token') : null;
+
     try {
       const res = await fetch('http://localhost:4000/api/problems', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
         body: JSON.stringify({
           title,
           difficulty,
@@ -51,13 +54,13 @@ export default function AdminProblemsPage() {
       });
 
       const data = await res.json();
-      if (res.ok) {
+      if (res.ok && data.success) {
         setMsg('Problem created successfully!');
         setTitle('');
         setDescription('');
         fetchProblems();
       } else {
-        setMsg(`Error: ${data.error}`);
+        setMsg(`Error: ${data.error?.message || data.error || 'Failed to create problem'}`);
       }
     } catch (err: any) {
       setMsg(`Error: ${err.message}`);

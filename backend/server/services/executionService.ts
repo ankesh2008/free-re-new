@@ -1,3 +1,4 @@
+import vm from 'vm';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -23,91 +24,109 @@ export interface ExecutionResult {
 }
 
 /**
- * Execute user code against a set of test cases locally in an isolated sub-process.
+ * Safely execute user code against test cases.
+ * JavaScript uses Node vm context with sandbox restrictions and timeouts.
+ * Python uses an isolated script execution with timeout limits.
  */
 export async function runTestsLocally(
   code: string,
   language: 'javascript' | 'python',
   testCases: TestCase[]
 ): Promise<ExecutionResult> {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freere-'));
+  const startTime = Date.now();
   const results = [];
   let testsPassed = 0;
-  const startTime = Date.now();
 
-  try {
-    if (language === 'javascript') {
-      const runnerCode = `
-${code}
+  if (language === 'javascript') {
+    try {
+      // Find entry function name safely via AST/regex
+      const fnMatch = code.match(/function\s+([a-zA-Z0-9_$]+)/) || code.match(/(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=/);
+      const fnName = fnMatch ? fnMatch[1] : 'solution';
 
-const testCases = ${JSON.stringify(testCases)};
-const results = [];
+      // Construct sandboxed execution context
+      const sandbox: any = {
+        console: { log: () => {} },
+        JSON,
+        Math,
+        Array,
+        Object,
+        String,
+        Number,
+        Boolean,
+        RegExp,
+      };
 
-for (let i = 0; i < testCases.length; i++) {
-  const tc = testCases[i];
-  try {
-    const args = JSON.parse(tc.input);
-    const expected = JSON.parse(tc.expected);
-    
-    // Find entry function in code
-    const fnName = Object.keys(global).find(k => typeof global[k] === 'function' && k !== 'runnerCode') || 
-                   '${code.match(/function\s+([a-zA-Z0-9_$]+)/)?.[1] || 'twoSum'}';
-                   
-    let result;
-    if (typeof eval(fnName) === 'function') {
-      result = eval(fnName)(...args);
-    } else {
-      throw new Error("Function " + fnName + " not found");
-    }
+      vm.createContext(sandbox);
 
-    const passed = JSON.stringify(result) === JSON.stringify(expected);
-    results.push({
-      testIndex: i,
-      passed,
-      actual: JSON.stringify(result),
-      expected: JSON.stringify(expected)
-    });
-  } catch (err) {
-    results.push({
-      testIndex: i,
-      passed: false,
-      expected: tc.expected,
-      error: err.message || String(err)
-    });
-  }
-}
+      // Execute code definition inside sandbox with 1000ms limit
+      vm.runInNewContext(code, sandbox, { timeout: 1000 });
 
-console.log(JSON.stringify(results));
-`;
-      const scriptPath = path.join(tmpDir, 'runner.js');
-      fs.writeFileSync(scriptPath, runnerCode);
-
-      try {
-        const output = execSync(`node "${scriptPath}"`, { timeout: 3000 }).toString();
-        const parsed = JSON.parse(output.trim());
-        parsed.forEach((r: any) => {
-          if (r.passed) testsPassed++;
-          results.push(r);
-        });
-      } catch (err: any) {
-        return {
-          status: 'COMPILE_ERROR',
-          testsPassed: 0,
-          totalTests: testCases.length,
-          executionTimeMs: Date.now() - startTime,
-          results: [
-            {
-              testIndex: 0,
-              passed: false,
-              expected: '',
-              error: err.stderr?.toString() || err.message || 'Execution error',
-            },
-          ],
-        };
+      if (typeof sandbox[fnName] !== 'function') {
+        throw new Error(`Target function '${fnName}' is not defined`);
       }
-    } else if (language === 'python') {
-      // Find python function name
-      const fnName = code.match(/def\s+([a-zA-Z0-9_$]+)/)?.[1] || 'twoSum';
+
+      for (let i = 0; i < testCases.length; i++) {
+        const tc = testCases[i];
+        try {
+          const args = JSON.parse(tc.input);
+          const expected = JSON.parse(tc.expected);
+
+          const evalCode = `JSON.stringify(${fnName}(...${JSON.stringify(args)}))`;
+          const actualStr = vm.runInNewContext(evalCode, sandbox, { timeout: 1000 });
+          const actual = JSON.parse(actualStr);
+
+          const passed = JSON.stringify(actual) === JSON.stringify(expected);
+          if (passed) testsPassed++;
+
+          results.push({
+            testIndex: i,
+            passed,
+            actual: JSON.stringify(actual),
+            expected: JSON.stringify(expected),
+          });
+        } catch (err: any) {
+          results.push({
+            testIndex: i,
+            passed: false,
+            expected: tc.expected,
+            error: err.message || String(err),
+          });
+        }
+      }
+
+      const executionTimeMs = Date.now() - startTime;
+      const allPassed = testsPassed === testCases.length && testCases.length > 0;
+
+      return {
+        status: allPassed ? 'ACCEPTED' : 'WRONG_ANSWER',
+        testsPassed,
+        totalTests: testCases.length,
+        executionTimeMs,
+        results,
+      };
+    } catch (err: any) {
+      const isTimeout = err.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT' || err.message?.includes('timed out');
+      return {
+        status: isTimeout ? 'TIME_LIMIT_EXCEEDED' : 'COMPILE_ERROR',
+        testsPassed: 0,
+        totalTests: testCases.length,
+        executionTimeMs: Date.now() - startTime,
+        results: [
+          {
+            testIndex: 0,
+            passed: false,
+            expected: '',
+            error: isTimeout ? 'Execution time limit exceeded (1000ms)' : err.message || String(err),
+          },
+        ],
+      };
+    }
+  } else if (language === 'python') {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freere-'));
+    try {
+      const fnMatch = code.match(/def\s+([a-zA-Z0-9_$]+)/);
+      const fnName = fnMatch ? fnMatch[1] : 'solution';
+
       const runnerCode = `
 import json, sys
 
@@ -142,16 +161,32 @@ print(json.dumps(results))
       const scriptPath = path.join(tmpDir, 'runner.py');
       fs.writeFileSync(scriptPath, runnerCode);
 
+      const pythonCmd = os.platform() === 'win32' ? 'python' : 'python3';
+      let output = '';
+
       try {
-        // Try python or python3
-        const pythonCmd = os.platform() === 'win32' ? 'python' : 'python3';
-        const output = execSync(`${pythonCmd} "${scriptPath}"`, { timeout: 3000 }).toString();
-        const parsed = JSON.parse(output.trim());
-        parsed.forEach((r: any) => {
-          if (r.passed) testsPassed++;
-          results.push(r);
-        });
+        output = execSync(`${pythonCmd} "${scriptPath}"`, {
+          timeout: 3000,
+          encoding: 'utf-8',
+          maxBuffer: 1024 * 1024,
+        }).toString();
       } catch (err: any) {
+        if (err.killed || err.signal === 'SIGTERM') {
+          return {
+            status: 'TIME_LIMIT_EXCEEDED',
+            testsPassed: 0,
+            totalTests: testCases.length,
+            executionTimeMs: 3000,
+            results: [
+              {
+                testIndex: 0,
+                passed: false,
+                expected: '',
+                error: 'Python execution time limit exceeded (3000ms)',
+              },
+            ],
+          };
+        }
         return {
           status: 'COMPILE_ERROR',
           testsPassed: 0,
@@ -167,21 +202,35 @@ print(json.dumps(results))
           ],
         };
       }
+
+      const parsed = JSON.parse(output.trim());
+      parsed.forEach((r: any) => {
+        if (r.passed) testsPassed++;
+        results.push(r);
+      });
+
+      const executionTimeMs = Date.now() - startTime;
+      const allPassed = testsPassed === testCases.length && testCases.length > 0;
+
+      return {
+        status: allPassed ? 'ACCEPTED' : 'WRONG_ANSWER',
+        testsPassed,
+        totalTests: testCases.length,
+        executionTimeMs,
+        results,
+      };
+    } finally {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {}
     }
-  } finally {
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
   }
 
-  const executionTimeMs = Date.now() - startTime;
-  const allPassed = testsPassed === testCases.length && testCases.length > 0;
-
   return {
-    status: allPassed ? 'ACCEPTED' : 'WRONG_ANSWER',
-    testsPassed,
+    status: 'COMPILE_ERROR',
+    testsPassed: 0,
     totalTests: testCases.length,
-    executionTimeMs,
-    results,
+    executionTimeMs: Date.now() - startTime,
+    results: [],
   };
 }
