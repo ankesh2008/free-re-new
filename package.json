@@ -1,52 +1,18 @@
 {
-  "name": "free-re",
+  "name": "free-re-root",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev:frontend": "next dev -p 3000",
-    "dev:backend": "tsx watch server/index.ts",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
-    "build:frontend": "next build",
-    "build:backend": "tsc --project tsconfig.server.json",
-    "build": "prisma generate && npm run build:frontend && npm run build:backend",
-    "start:frontend": "next start -p 3000",
-    "start:backend": "node dist/server/index.js",
-    "db:push": "prisma db push",
-    "db:seed": "tsx prisma/seed.ts"
-  },
-  "dependencies": {
-    "@monaco-editor/react": "^4.6.0",
-    "@prisma/client": "^5.22.0",
-    "bcryptjs": "^2.4.3",
-    "clsx": "^2.1.1",
-    "cors": "^2.8.5",
-    "express": "^4.21.1",
-    "jsonwebtoken": "^9.0.2",
-    "lucide-react": "^0.460.0",
-    "monaco-editor": "^0.52.0",
-    "next": "^14.2.18",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "socket.io": "^4.8.1",
-    "socket.io-client": "^4.8.1",
-    "tailwind-merge": "^2.5.4",
-    "y-monaco": "^0.1.6",
-    "yjs": "^13.6.20"
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build",
+    "build": "npm run build:backend && npm run build:frontend",
+    "db:push": "npm --prefix backend run db:push",
+    "db:seed": "npm --prefix backend run db:seed"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
-    "@types/cors": "^2.8.17",
-    "@types/express": "^4.17.21",
-    "@types/jsonwebtoken": "^9.0.7",
-    "@types/node": "^20.17.6",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "autoprefixer": "^10.4.20",
-    "concurrently": "^9.1.0",
-    "postcss": "^8.4.49",
-    "prisma": "^5.22.0",
-    "tailwindcss": "^3.4.15",
-    "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "concurrently": "^9.1.0"
   }
 }

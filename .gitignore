@@ -1,22 +1,28 @@
 # dependencies
-/node_modules
-/.pnpm-store
+node_modules/
+**/node_modules/
 
 # next.js
-/.next/
-/out/
+.next/
+**/.next/
+out/
+**/out/
 
 # build outputs
-/dist/
-/build/
+dist/
+**/dist/
 
 # database & local storage
 prisma/*.db
 prisma/*.db-journal
+**/prisma/*.db
+**/prisma/*.db-journal
 
 # environment variables
 .env
 .env*.local
+**/.env
+**/.env*.local
 
 # logs & debug
 npm-debug.log*
