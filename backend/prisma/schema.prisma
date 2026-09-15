@@ -12,6 +12,7 @@ model User {
   username     String       @unique
   email        String       @unique
   passwordHash String
+  role         String       @default("USER") // USER, ADMIN
   elo          Int          @default(1200)
   wins         Int          @default(0)
   losses       Int          @default(0)

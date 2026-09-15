@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { prisma } from '../lib/db';
 import { sendError } from '../lib/response';
-import { authMiddleware } from '../middleware/authMiddleware';
+import { authMiddleware, adminMiddleware } from '../middleware/authMiddleware';
+import { createRateLimiter } from '../middleware/rateLimiter';
 
 const router = Router();
+const problemRateLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 20, keyPrefix: 'problem' });
 
 // List all problems
 router.get('/', async (req, res) => {
@@ -49,22 +51,44 @@ router.get('/:idOrSlug', async (req, res) => {
 // Helper validation for test arrays
 function validateTestCases(tests: any): boolean {
   if (!Array.isArray(tests)) return false;
+  if (tests.length > 50) return false; // Maximum 50 test cases limit
   return tests.every(
-    (t) => typeof t === 'object' && t !== null && typeof t.input === 'string' && typeof t.expected === 'string'
+    (t) =>
+      typeof t === 'object' &&
+      t !== null &&
+      typeof t.input === 'string' &&
+      t.input.length <= 10000 &&
+      typeof t.expected === 'string' &&
+      t.expected.length <= 10000
   );
 }
 
 // Protected Route: Admin Create Problem
-router.post('/', authMiddleware, async (req, res) => {
+router.post('/', problemRateLimiter, authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { title, difficulty, description, initialJS, initialPy, sampleTests, hiddenTests } = req.body;
 
-    if (!title || !description || !initialJS || !initialPy) {
-      return sendError(res, 400, 'Title, description, initialJS, and initialPy are required');
+    if (!title || typeof title !== 'string' || title.length > 100) {
+      return sendError(res, 400, 'Title is required and must be under 100 characters');
     }
 
-    const parsedSample = typeof sampleTests === 'string' ? JSON.parse(sampleTests || '[]') : sampleTests;
-    const parsedHidden = typeof hiddenTests === 'string' ? JSON.parse(hiddenTests || '[]') : hiddenTests;
+    if (!description || typeof description !== 'string' || description.length > 20000) {
+      return sendError(res, 400, 'Description is required and must be under 20,000 characters');
+    }
+
+    if (!initialJS || typeof initialJS !== 'string' || !initialPy || typeof initialPy !== 'string') {
+      return sendError(res, 400, 'initialJS and initialPy starter templates are required');
+    }
+
+    let parsedSample: any[] = [];
+    let parsedHidden: any[] = [];
+
+    try {
+      parsedSample = typeof sampleTests === 'string' ? JSON.parse(sampleTests || '[]') : sampleTests;
+      parsedHidden = typeof hiddenTests === 'string' ? JSON.parse(hiddenTests || '[]') : hiddenTests;
+    } catch {
+      return sendError(res, 400, 'Invalid JSON format for test cases');
+    }
 
     if (!validateTestCases(parsedSample) || !validateTestCases(parsedHidden)) {
       return sendError(res, 400, 'Test cases must be an array of objects with { input: string, expected: string }');
@@ -76,7 +100,7 @@ router.post('/', authMiddleware, async (req, res) => {
       data: {
         title,
         slug,
-        difficulty: difficulty || 'Medium',
+        difficulty: ['Easy', 'Medium', 'Hard'].includes(difficulty) ? difficulty : 'Medium',
         description,
         initialJS,
         initialPy,

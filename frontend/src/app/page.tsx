@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Swords, Users, Play, Plus, ArrowRight, ShieldCheck, Zap, Code, Trophy } from 'lucide-react';
 import { getStoredUser, setStoredUser, User } from '@/lib/auth';
 import { getSocket } from '@/lib/socket';
+import { getApiUrl } from '@/lib/api';
 
 export default function LobbyPage() {
   const router = useRouter();
@@ -37,7 +38,7 @@ export default function LobbyPage() {
 
   const autoGuestLogin = async () => {
     try {
-      const res = await fetch('http://localhost:4000/api/auth/guest', { method: 'POST' });
+      const res = await fetch(getApiUrl('/api/auth/guest'), { method: 'POST' });
       const data = await res.json();
       if (data.user) {
         setStoredUser(data.user, data.token);

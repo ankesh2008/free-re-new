@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { PlusCircle, FileText } from 'lucide-react';
+import { getApiUrl } from '@/lib/api';
 
 export default function AdminProblemsPage() {
   const [problems, setProblems] = useState<any[]>([]);
@@ -21,7 +22,7 @@ export default function AdminProblemsPage() {
   }, []);
 
   const fetchProblems = () => {
-    fetch('http://localhost:4000/api/problems')
+    fetch(getApiUrl('/api/problems'))
       .then((res) => res.json())
       .then((data) => {
         setProblems(Array.isArray(data) ? data : []);
@@ -36,7 +37,7 @@ export default function AdminProblemsPage() {
     const token = typeof window !== 'undefined' ? localStorage.getItem('freere_token') : null;
 
     try {
-      const res = await fetch('http://localhost:4000/api/problems', {
+      const res = await fetch(getApiUrl('/api/problems'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

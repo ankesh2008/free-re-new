@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Trophy, Medal, Award, Flame, User as UserIcon } from 'lucide-react';
 import Link from 'next/link';
+import { getApiUrl } from '@/lib/api';
 
 interface LeaderboardEntry {
   id: string;
@@ -18,7 +19,7 @@ export default function LeaderboardPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('http://localhost:4000/api/matches/leaderboard')
+    fetch(getApiUrl('/api/matches/leaderboard'))
       .then((res) => res.json())
       .then((data) => {
         setLeaderboard(Array.isArray(data) ? data : []);

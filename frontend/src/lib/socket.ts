@@ -9,12 +9,24 @@ let socket: Socket | null = null;
 
 export function getSocket(): Socket {
   if (!socket && typeof window !== 'undefined') {
+    const token = localStorage.getItem('freere_token');
+
     socket = io(SOCKET_URL, {
       autoConnect: true,
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
+      auth: { token },
     });
   }
   return socket!;
+}
+
+export function updateSocketAuthToken(token: string) {
+  if (socket) {
+    socket.auth = { token };
+    if (!socket.connected) {
+      socket.connect();
+    }
+  }
 }

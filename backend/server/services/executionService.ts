@@ -1,5 +1,5 @@
 import vm from 'vm';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -23,10 +23,89 @@ export interface ExecutionResult {
   }[];
 }
 
+const MAX_CODE_LENGTH = 50000;
+
+// JavaScript Blacklisted Patterns for Static Security Scan
+const JS_FORBIDDEN_PATTERNS = [
+  /\bprocess\b/,
+  /\bglobal\b/,
+  /\bglobalThis\b/,
+  /\brequire\b/,
+  /\bimport\b/,
+  /\beval\b/,
+  /\bFunction\b/,
+  /\bconstructor\b/,
+  /\b__proto__\b/,
+  /\bmainModule\b/,
+  /\bbinding\b/,
+  /\bBuffer\b/,
+  /\bchild_process\b/,
+  /\bfs\b/,
+  /\bos\b/,
+  /\bpath\b/,
+  /\bnet\b/,
+  /\bhttp\b/,
+  /\bhttps\b/,
+  /\bReflect\b/,
+  /\bProxy\b/,
+];
+
+// Python Blacklisted Patterns for Static Security Scan
+const PYTHON_FORBIDDEN_PATTERNS = [
+  /\bimport\s+os\b/,
+  /\bfrom\s+os\b/,
+  /\bimport\s+sys\b/,
+  /\bfrom\s+sys\b/,
+  /\bimport\s+subprocess\b/,
+  /\bfrom\s+subprocess\b/,
+  /\bimport\s+shutil\b/,
+  /\bimport\s+socket\b/,
+  /\bimport\s+urllib\b/,
+  /\bimport\s+http\b/,
+  /\bimport\s+pickle\b/,
+  /\bimport\s+ctypes\b/,
+  /\bimport\s+importlib\b/,
+  /\bimport\s+builtins\b/,
+  /\b__import__\b/,
+  /\beval\s*\(/,
+  /\bexec\s*\(/,
+  /\bopen\s*\(/,
+  /\bglobals\s*\(/,
+  /\blocals\s*\(/,
+  /\bgetattr\s*\(/,
+  /\bsetattr\s*\(/,
+  /\bcompile\s*\(/,
+  /\b__subclasses__\b/,
+  /\b__bases__\b/,
+  /\b__mro__\b/,
+  /\b__globals__\b/,
+];
+
 /**
- * Safely execute user code against test cases.
- * JavaScript uses Node vm context with sandbox restrictions and timeouts.
- * Python uses an isolated script execution with timeout limits.
+ * Validate code against static security rules before execution.
+ */
+function validateCodeSecurity(code: string, language: 'javascript' | 'python'): string | null {
+  if (!code || typeof code !== 'string') {
+    return 'Code submission is empty or invalid';
+  }
+
+  if (code.length > MAX_CODE_LENGTH) {
+    return `Code exceeds maximum allowed length of ${MAX_CODE_LENGTH} characters`;
+  }
+
+  const patterns = language === 'javascript' ? JS_FORBIDDEN_PATTERNS : PYTHON_FORBIDDEN_PATTERNS;
+
+  for (const pattern of patterns) {
+    if (pattern.test(code)) {
+      return `Security Policy Violation: Forbidden statement or identifier detected (${pattern.source})`;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Safely execute user code against test cases with isolated sandboxing.
  */
 export async function runTestsLocally(
   code: string,
@@ -37,24 +116,42 @@ export async function runTestsLocally(
   const results = [];
   let testsPassed = 0;
 
+  // 1. Static Security Scan
+  const secError = validateCodeSecurity(code, language);
+  if (secError) {
+    return {
+      status: 'COMPILE_ERROR',
+      testsPassed: 0,
+      totalTests: testCases.length,
+      executionTimeMs: Date.now() - startTime,
+      results: [
+        {
+          testIndex: 0,
+          passed: false,
+          expected: '',
+          error: secError,
+        },
+      ],
+    };
+  }
+
   if (language === 'javascript') {
     try {
-      // Find entry function name safely via AST/regex
+      // Find entry function name safely
       const fnMatch = code.match(/function\s+([a-zA-Z0-9_$]+)/) || code.match(/(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=/);
       const fnName = fnMatch ? fnMatch[1] : 'solution';
 
-      // Construct sandboxed execution context
-      const sandbox: any = {
-        console: { log: () => {} },
-        JSON,
-        Math,
-        Array,
-        Object,
-        String,
-        Number,
-        Boolean,
-        RegExp,
-      };
+      // Construct hardened null-prototype sandbox context
+      const sandbox = Object.create(null);
+      sandbox.console = Object.freeze({ log: () => {} });
+      sandbox.JSON = JSON;
+      sandbox.Math = Math;
+      sandbox.Array = Array;
+      sandbox.Object = Object;
+      sandbox.String = String;
+      sandbox.Number = Number;
+      sandbox.Boolean = Boolean;
+      sandbox.RegExp = RegExp;
 
       vm.createContext(sandbox);
 
@@ -62,7 +159,7 @@ export async function runTestsLocally(
       vm.runInNewContext(code, sandbox, { timeout: 1000 });
 
       if (typeof sandbox[fnName] !== 'function') {
-        throw new Error(`Target function '${fnName}' is not defined`);
+        throw new Error(`Target function '${fnName}' is not defined or is not a valid function`);
       }
 
       for (let i = 0; i < testCases.length; i++) {
@@ -71,10 +168,7 @@ export async function runTestsLocally(
           const args = JSON.parse(tc.input);
           const expected = JSON.parse(tc.expected);
 
-          const evalCode = `JSON.stringify(${fnName}(...${JSON.stringify(args)}))`;
-          const actualStr = vm.runInNewContext(evalCode, sandbox, { timeout: 1000 });
-          const actual = JSON.parse(actualStr);
-
+          const actual = sandbox[fnName](...args);
           const passed = JSON.stringify(actual) === JSON.stringify(expected);
           if (passed) testsPassed++;
 
@@ -127,68 +221,72 @@ export async function runTestsLocally(
       const fnMatch = code.match(/def\s+([a-zA-Z0-9_$]+)/);
       const fnName = fnMatch ? fnMatch[1] : 'solution';
 
-      const runnerCode = `
-import json, sys
+      const solutionPath = path.join(tmpDir, 'user_solution.py');
+      const testsPath = path.join(tmpDir, 'tests.json');
+      const runnerPath = path.join(tmpDir, 'runner.py');
 
-${code}
+      fs.writeFileSync(solutionPath, code);
+      fs.writeFileSync(testsPath, JSON.stringify(testCases));
 
-test_cases = json.loads('''${JSON.stringify(testCases)}''')
-results = []
+      // Runner script reads solution and tests without inline interpolation
+      const runnerCode = `import json
+import sys
+sys.path.insert(0, r'${tmpDir.replace(/\\/g, '\\\\')}')
+import user_solution
 
-for i, tc in enumerate(test_cases):
-    try:
-        args = json.loads(tc['input'])
-        expected = json.loads(tc['expected'])
-        fn = globals()['${fnName}']
-        actual = fn(*args) if isinstance(args, list) else fn(args)
-        passed = actual == expected
-        results.append({
-            "testIndex": i,
-            "passed": passed,
-            "actual": json.dumps(actual),
-            "expected": json.dumps(expected)
-        })
-    except Exception as e:
-        results.append({
-            "testIndex": i,
-            "passed": False,
-            "expected": tc['expected'],
-            "error": str(e)
-        })
+def run():
+    with open('${testsPath.replace(/\\/g, '\\\\')}', 'r') as f:
+        test_cases = json.load(f)
+    results = []
 
-print(json.dumps(results))
+    for i, tc in enumerate(test_cases):
+        try:
+            args = json.loads(tc['input'])
+            expected = json.loads(tc['expected'])
+            fn = getattr(user_solution, '${fnName}')
+            actual = fn(*args) if isinstance(args, list) else fn(args)
+            passed = actual == expected
+            results.append({
+                "testIndex": i,
+                "passed": passed,
+                "actual": json.dumps(actual),
+                "expected": json.dumps(expected)
+            })
+        except Exception as e:
+            results.append({
+                "testIndex": i,
+                "passed": False,
+                "expected": tc['expected'],
+                "error": str(e)
+            })
+
+    print(json.dumps(results))
+
+if __name__ == '__main__':
+    run()
 `;
-      const scriptPath = path.join(tmpDir, 'runner.py');
-      fs.writeFileSync(scriptPath, runnerCode);
+      fs.writeFileSync(runnerPath, runnerCode);
 
       const pythonCmd = os.platform() === 'win32' ? 'python' : 'python3';
       let output = '';
 
       try {
-        output = execSync(`${pythonCmd} "${scriptPath}"`, {
-          timeout: 3000,
-          encoding: 'utf-8',
-          maxBuffer: 1024 * 1024,
-        }).toString();
+        // Run with isolated execution flags (-S -I -E -B -u) and stripped environment
+        output = execFileSync(
+          pythonCmd,
+          ['-S', '-I', '-E', '-B', '-u', runnerPath],
+          {
+            cwd: tmpDir,
+            timeout: 2500,
+            encoding: 'utf-8',
+            maxBuffer: 1024 * 1024,
+            env: { PATH: process.env.PATH || '' }, // Strip all application environment secrets
+          }
+        ).toString();
       } catch (err: any) {
-        if (err.killed || err.signal === 'SIGTERM') {
-          return {
-            status: 'TIME_LIMIT_EXCEEDED',
-            testsPassed: 0,
-            totalTests: testCases.length,
-            executionTimeMs: 3000,
-            results: [
-              {
-                testIndex: 0,
-                passed: false,
-                expected: '',
-                error: 'Python execution time limit exceeded (3000ms)',
-              },
-            ],
-          };
-        }
+        const isTimeout = err.code === 'ETIMEDOUT' || err.killed || err.signal === 'SIGTERM';
         return {
-          status: 'COMPILE_ERROR',
+          status: isTimeout ? 'TIME_LIMIT_EXCEEDED' : 'COMPILE_ERROR',
           testsPassed: 0,
           totalTests: testCases.length,
           executionTimeMs: Date.now() - startTime,
@@ -197,7 +295,7 @@ print(json.dumps(results))
               testIndex: 0,
               passed: false,
               expected: '',
-              error: err.stderr?.toString() || err.message || 'Python execution error',
+              error: isTimeout ? 'Python execution time limit exceeded (2500ms)' : err.stderr?.toString() || err.message || 'Python execution error',
             },
           ],
         };

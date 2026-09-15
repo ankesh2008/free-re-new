@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import { User as UserIcon, Trophy, Swords, Calendar, ArrowRight } from 'lucide-react';
 import Link from 'next/link';
+import { getApiUrl } from '@/lib/api';
 
 export default function UserProfilePage() {
   const params = useParams();
@@ -13,7 +14,7 @@ export default function UserProfilePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`http://localhost:4000/api/auth/user/${username}`)
+    fetch(getApiUrl(`/api/auth/user/${username}`))
       .then((res) => res.json())
       .then((resData) => {
         setData(resData);

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Swords, Trophy, User as UserIcon, PlusCircle, LogOut, Zap } from 'lucide-react';
 import { getStoredUser, clearStoredUser, setStoredUser, User } from '@/lib/auth';
+import { getApiUrl } from '@/lib/api';
 
 export default function Navbar() {
   const [user, setUser] = useState<User | null>(null);
@@ -14,7 +15,7 @@ export default function Navbar() {
 
   const handleGuestLogin = async () => {
     try {
-      const res = await fetch('http://localhost:4000/api/auth/guest', { method: 'POST' });
+      const res = await fetch(getApiUrl('/api/auth/guest'), { method: 'POST' });
       const data = await res.json();
       if (data.user) {
         setStoredUser(data.user, data.token);

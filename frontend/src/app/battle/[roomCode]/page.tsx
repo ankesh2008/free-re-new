@@ -134,7 +134,7 @@ export default function BattleArenaPage() {
     const socket = getSocket();
     socket.emit(
       'submit_code',
-      { roomCode, userId: user.id, code, language },
+      { roomCode, code, language },
       (res: any) => {
         setIsSubmitting(false);
         setConsoleOutput(res);
@@ -145,7 +145,7 @@ export default function BattleArenaPage() {
   const handleForfeit = () => {
     if (!user || !confirm('Are you sure you want to forfeit this match?')) return;
     const socket = getSocket();
-    socket.emit('forfeit_match', { roomCode, userId: user.id });
+    socket.emit('forfeit_match', { roomCode });
   };
 
   const handleCopyLink = () => {

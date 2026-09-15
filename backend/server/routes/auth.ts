@@ -4,20 +4,38 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { prisma } from '../lib/db';
 import { sendError } from '../lib/response';
+import { getJwtSecret } from '../middleware/authMiddleware';
+import { createRateLimiter } from '../middleware/rateLimiter';
 
 const router = Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'freere_secret_key_12345';
+const authRateLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 30, keyPrefix: 'auth' });
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const USERNAME_REGEX = /^[a-zA-Z0-9_]{3,20}$/;
 
 // Register
-router.post('/register', async (req, res) => {
+router.post('/register', authRateLimiter, async (req, res) => {
   try {
     const { username, email, password } = req.body;
+
     if (!username || !email || !password) {
       return sendError(res, 400, 'Username, email, and password are required');
     }
 
+    if (!USERNAME_REGEX.test(username)) {
+      return sendError(res, 400, 'Username must be 3-20 characters long and contain only letters, numbers, and underscores');
+    }
+
+    if (!EMAIL_REGEX.test(email)) {
+      return sendError(res, 400, 'Please provide a valid email address');
+    }
+
+    if (password.length < 6 || password.length > 100) {
+      return sendError(res, 400, 'Password must be between 6 and 100 characters');
+    }
+
     const existing = await prisma.user.findFirst({
-      where: { OR: [{ email }, { username }] },
+      where: { OR: [{ email: email.toLowerCase() }, { username }] },
     });
 
     if (existing) {
@@ -26,10 +44,20 @@ router.post('/register', async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
-      data: { username, email, passwordHash },
+      data: {
+        username,
+        email: email.toLowerCase(),
+        passwordHash,
+        role: 'USER',
+      },
     });
 
-    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
+    const jwtSecret = getJwtSecret();
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role },
+      jwtSecret,
+      { expiresIn: '7d' }
+    );
 
     res.json({
       success: true,
@@ -38,6 +66,7 @@ router.post('/register', async (req, res) => {
         id: user.id,
         username: user.username,
         email: user.email,
+        role: user.role,
         elo: user.elo,
         wins: user.wins,
         losses: user.losses,
@@ -50,14 +79,16 @@ router.post('/register', async (req, res) => {
 });
 
 // Login
-router.post('/login', async (req, res) => {
+router.post('/login', authRateLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
       return sendError(res, 400, 'Email and password are required');
     }
 
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
 
     if (!user) {
       return sendError(res, 400, 'Invalid credentials');
@@ -68,7 +99,12 @@ router.post('/login', async (req, res) => {
       return sendError(res, 400, 'Invalid credentials');
     }
 
-    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
+    const jwtSecret = getJwtSecret();
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role },
+      jwtSecret,
+      { expiresIn: '7d' }
+    );
 
     res.json({
       success: true,
@@ -77,6 +113,7 @@ router.post('/login', async (req, res) => {
         id: user.id,
         username: user.username,
         email: user.email,
+        role: user.role,
         elo: user.elo,
         wins: user.wins,
         losses: user.losses,
@@ -88,8 +125,8 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// Quick Guest Login with UUID collision retry loop
-router.post('/guest', async (req, res) => {
+// Quick Guest Login
+router.post('/guest', authRateLimiter, async (req, res) => {
   try {
     let retries = 5;
     let user = null;
@@ -102,9 +139,14 @@ router.post('/guest', async (req, res) => {
 
       try {
         user = await prisma.user.create({
-          data: { username: guestUsername, email: guestEmail, passwordHash },
+          data: {
+            username: guestUsername,
+            email: guestEmail,
+            passwordHash,
+            role: 'USER',
+          },
         });
-        break; // Successfully created
+        break;
       } catch (err: any) {
         if (err.code === 'P2002') {
           retries--;
@@ -118,7 +160,12 @@ router.post('/guest', async (req, res) => {
       return sendError(res, 500, 'Failed to generate unique guest account');
     }
 
-    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '1d' });
+    const jwtSecret = getJwtSecret();
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role },
+      jwtSecret,
+      { expiresIn: '1d' }
+    );
 
     res.json({
       success: true,
@@ -127,6 +174,7 @@ router.post('/guest', async (req, res) => {
         id: user.id,
         username: user.username,
         email: user.email,
+        role: user.role,
         elo: user.elo,
         wins: user.wins,
         losses: user.losses,
@@ -146,6 +194,7 @@ router.get('/user/:username', async (req, res) => {
       select: {
         id: true,
         username: true,
+        role: true,
         elo: true,
         wins: true,
         losses: true,

@@ -12,23 +12,45 @@ import { setupSocketHandlers } from './socket/socketHandler';
 const app = express();
 const server = http.createServer(app);
 
-// Environment setup & allowed origins
-const allowedOrigins = process.env.ALLOWED_ORIGINS 
-  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-  : ['http://localhost:3000'];
+// Flexible CORS checking for Vercel preview/production deployments & local testing
+const configuredOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
+  : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+
+const isOriginAllowed = (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+  if (!origin) return callback(null, true); // Allow non-browser requests (Postman, curl, internal calls)
+
+  if (configuredOrigins.includes('*')) return callback(null, true);
+
+  const isAllowed = configuredOrigins.some((allowed) => {
+    if (allowed === origin) return true;
+    if (allowed.startsWith('*.') && origin.endsWith(allowed.slice(1))) return true;
+    if (origin.endsWith('.vercel.app')) return true; // Auto-allow Vercel deployment domains
+    return false;
+  });
+
+  if (isAllowed) {
+    callback(null, true);
+  } else {
+    console.warn(`Blocked CORS request from origin: ${origin}`);
+    callback(null, false);
+  }
+};
 
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST'],
+    origin: isOriginAllowed,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     credentials: true,
   },
 });
 
-app.use(cors({
-  origin: allowedOrigins,
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: isOriginAllowed,
+    credentials: true,
+  })
+);
 
 // Payload size limits protection against DoS
 app.use(express.json({ limit: '10mb' }));
@@ -63,5 +85,5 @@ setupSocketHandlers(io);
 const PORT = process.env.PORT || 4000;
 
 server.listen(PORT, () => {
-  console.log(`🚀 free-re Backend Server running on http://localhost:${PORT}`);
+  console.log(`🚀 free-re Backend Server running on port ${PORT}`);
 });
