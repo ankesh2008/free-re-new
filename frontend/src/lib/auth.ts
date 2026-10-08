@@ -1,3 +1,5 @@
+import { updateSocketAuthToken } from './socket';
+
 export interface User {
   id: string;
   username: string;
@@ -22,7 +24,10 @@ export function getStoredUser(): User | null {
 export function setStoredUser(user: User, token?: string) {
   if (typeof window === 'undefined') return;
   localStorage.setItem('freere_user', JSON.stringify(user));
-  if (token) localStorage.setItem('freere_token', token);
+  if (token) {
+    localStorage.setItem('freere_token', token);
+    updateSocketAuthToken(token);
+  }
 }
 
 export function clearStoredUser() {

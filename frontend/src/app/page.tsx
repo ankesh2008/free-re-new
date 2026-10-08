@@ -36,28 +36,35 @@ export default function LobbyPage() {
     };
   }, [router]);
 
-  const autoGuestLogin = async () => {
+  const autoGuestLogin = async (): Promise<User | null> => {
     try {
       const res = await fetch(getApiUrl('/api/auth/guest'), { method: 'POST' });
       const data = await res.json();
       if (data.user) {
         setStoredUser(data.user, data.token);
         setUser(data.user);
+        return data.user;
       }
     } catch (err) {
       console.error(err);
     }
+    return null;
   };
 
-  const handleQuickMatch = () => {
-    if (!user) return;
+  const handleQuickMatch = async () => {
+    let currentUser = user || getStoredUser();
+    if (!currentUser) {
+      currentUser = await autoGuestLogin();
+    }
+    if (!currentUser) return;
+
     const socket = getSocket();
     if (!isSearchingQueue) {
       setIsSearchingQueue(true);
       socket.emit('join_queue', {
-        id: user.id,
-        username: user.username,
-        elo: user.elo,
+        id: currentUser.id,
+        username: currentUser.username,
+        elo: currentUser.elo,
       });
     } else {
       setIsSearchingQueue(false);
@@ -65,18 +72,34 @@ export default function LobbyPage() {
     }
   };
 
-  const handleCreatePrivateRoom = () => {
-    if (!user) return;
+  const handleCreatePrivateRoom = async () => {
+    setErrorMsg('');
+    let currentUser = user || getStoredUser();
+    if (!currentUser) {
+      currentUser = await autoGuestLogin();
+    }
+    if (!currentUser) {
+      setErrorMsg('Could not authenticate user. Please try again.');
+      return;
+    }
+
     setIsCreatingRoom(true);
     const socket = getSocket();
+
+    const timeout = setTimeout(() => {
+      setIsCreatingRoom(false);
+      setErrorMsg('Server connection timed out. Please try clicking Create Private Room again.');
+    }, 8000);
+
     socket.emit(
       'create_room',
-      { id: user.id, username: user.username, elo: user.elo },
+      { id: currentUser.id, username: currentUser.username, elo: currentUser.elo },
       (res: { roomCode: string; error?: string }) => {
+        clearTimeout(timeout);
         setIsCreatingRoom(false);
-        if (res.roomCode) {
+        if (res?.roomCode) {
           router.push(`/battle/${res.roomCode}`);
-        } else if (res.error) {
+        } else if (res?.error) {
           setErrorMsg(res.error);
         }
       }

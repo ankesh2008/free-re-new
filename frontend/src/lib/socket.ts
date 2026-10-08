@@ -8,25 +8,50 @@ const SOCKET_URL =
 let socket: Socket | null = null;
 
 export function getSocket(): Socket {
-  if (!socket && typeof window !== 'undefined') {
-    const token = localStorage.getItem('freere_token');
+  if (typeof window === 'undefined') return null as any;
 
+  const token = localStorage.getItem('freere_token');
+
+  if (!socket) {
     socket = io(SOCKET_URL, {
       autoConnect: true,
       reconnection: true,
-      reconnectionAttempts: 10,
+      reconnectionAttempts: 15,
       reconnectionDelay: 1000,
+      transports: ['websocket', 'polling'],
       auth: { token },
     });
-  }
-  return socket!;
-}
-
-export function updateSocketAuthToken(token: string) {
-  if (socket) {
-    socket.auth = { token };
-    if (!socket.connected) {
+  } else {
+    const currentToken = (socket.auth as any)?.token;
+    if (token && currentToken !== token) {
+      socket.auth = { token };
+      if (socket.disconnected) {
+        socket.connect();
+      } else {
+        socket.disconnect().connect();
+      }
+    } else if (token && socket.disconnected) {
+      socket.auth = { token };
       socket.connect();
     }
   }
+
+  return socket;
 }
+
+export function updateSocketAuthToken(token: string) {
+  if (typeof window !== 'undefined') {
+    const tokenVal = token || localStorage.getItem('freere_token');
+    if (socket) {
+      socket.auth = { token: tokenVal };
+      if (socket.disconnected) {
+        socket.connect();
+      } else {
+        socket.disconnect().connect();
+      }
+    } else {
+      getSocket();
+    }
+  }
+}
+
