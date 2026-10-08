@@ -8,8 +8,8 @@
   },
   "scripts": {
     "dev": "tsx watch server/index.ts",
-    "build": "prisma generate && tsc",
-    "start": "node dist/server/index.js",
+    "build": "prisma generate && prisma db push && tsx prisma/seed.ts && tsc",
+    "start": "prisma db push && node dist/server/index.js",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts"
   },
