@@ -21,7 +21,7 @@ export function getJwtSecret(): string {
 }
 
 export function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
+  const authHeader = req.headers?.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return sendError(res, 401, 'Authentication token is required');
   }
